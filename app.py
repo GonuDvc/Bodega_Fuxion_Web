@@ -39,6 +39,8 @@ if "plan_actual" not in st.session_state:
     st.session_state["plan_actual"] = ""
 if "dias_restantes" not in st.session_state:
     st.session_state["dias_restantes"] = 0
+if "empresa_id" not in st.session_state:
+    st.session_state["empresa_id"] = ""
 
 
 def mostrar_login():
@@ -59,7 +61,6 @@ def mostrar_login():
 
             if submit:
                 try:
-                    # Consultar la tabla de clientes en Supabase
                     respuesta = (
                         supabase.table("clientes_suscripciones")
                         .select("*")
@@ -75,18 +76,14 @@ def mostrar_login():
                         ).date()
                         fecha_hoy = datetime.now().date()
 
-                        # Validar si el plan no ha vencido
                         if fecha_hoy <= fecha_vencimiento:
-                            # 1. Calcular la diferencia de días exacta
                             dias_calculados = (fecha_vencimiento - fecha_hoy).days
 
-                            # 2. Guardar todo en la memoria de Streamlit
                             st.session_state["logeado"] = True
                             st.session_state["usuario_actual"] = usuario_input
+                            st.session_state["empresa_id"] = datos_cliente["empresa_id"]
                             st.session_state["plan_actual"] = datos_cliente["plan"]
-                            st.session_state["dias_restantes"] = (
-                                dias_calculados  # 🟢 ¡Arreglado aquí!
-                            )
+                            st.session_state["dias_restantes"] = dias_calculados
 
                             st.success("¡Acceso concedido! Preparando el Dashboard...")
                             st.rerun()
@@ -108,10 +105,9 @@ def mostrar_login():
 # ==============================================================================
 # 4. EL GUARDIA DE SEGURIDAD (Peaje)
 # ==============================================================================
-# Si no está logeado, muestra el login y DETIENE la ejecución
 if not st.session_state["logeado"]:
     mostrar_login()
-    st.stop()  # <-- Esto oculta todo tu dashboard si no han pagado
+    st.stop()
 
 # ==============================================================================
 # 5. MENÚ DEL USUARIO (Si ya pasó el peaje)
@@ -119,28 +115,21 @@ if not st.session_state["logeado"]:
 st.sidebar.markdown(f"👤 **Bienvenido:** {st.session_state['usuario_actual']}")
 st.sidebar.markdown(f"⭐ **Plan Activo:** {st.session_state['plan_actual']}")
 
-# --- LÓGICA DEL CONTADOR DE DÍAS Y ALERTAS ---
 dias = st.session_state["dias_restantes"]
 
 if dias > 10:
-    # Semáforo Verde (Más de 10 días)
     st.sidebar.success(f"⏳ **Tiempo restante:** {dias} días")
 elif dias > 0:
-    # Semáforo Amarillo (Entre 1 y 10 días)
     st.sidebar.warning(f"⚠️ **Tiempo restante:** {dias} días")
-
-    # Alerta flotante específica para 10, 5 y 1 día
     if dias in [10, 5, 1]:
         st.toast(
             f"¡Atención! A tu suscripción le quedan {dias} días. Contáctanos para renovar.",
             icon="🚨",
         )
 else:
-    # Semáforo Rojo (Vence hoy - 0 días)
     st.sidebar.error("⏳ **Tiempo restante:** ¡Vence HOY!")
     st.toast("¡Atención! Tu plan vence el día de hoy.", icon="🚨")
 
-# Botón para cerrar sesión
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state["logeado"] = False
     st.rerun()
@@ -179,54 +168,103 @@ plk = str(st.session_state.prod_limpiador)
 # ==============================================================================
 # 3. DESCARGA DE DATOS (CEREBRO CENTRAL)
 # ==============================================================================
+id_seguro = st.session_state.get("empresa_id", "")
+
+# PRODUCTOS AHORA SON GLOBALES (SIN FILTRO) PARA QUE TODOS LOS VEAN
 try:
     t_prod = supabase.table("productos").select("*").execute().data or []
 except:
     t_prod = []
 lista_prod = [p["nombre"] for p in t_prod] if t_prod else ["Sin datos"]
 
+# LAS DEMÁS TABLAS ESTÁN AISLADAS POR CLIENTE (CON FILTRO)
 try:
-    t_cli = supabase.table("clientes").select("*").execute().data or []
+    t_cli = (
+        supabase.table("clientes")
+        .select("*")
+        .eq("empresa_id", id_seguro)
+        .execute()
+        .data
+        or []
+    )
 except:
     t_cli = []
 lista_cli = [c["nombre"] for c in t_cli] if t_cli else ["Sin datos"]
 
 try:
-    t_ase = supabase.table("asesores").select("*").execute().data or []
+    t_ase = (
+        supabase.table("asesores")
+        .select("*")
+        .eq("empresa_id", id_seguro)
+        .execute()
+        .data
+        or []
+    )
 except:
     t_ase = []
 lista_ase = [a["nombre"] for a in t_ase] if t_ase else ["Sin datos"]
 
 try:
-    t_gastos = supabase.table("gastos").select("*").execute().data or []
+    t_gastos = (
+        supabase.table("gastos").select("*").eq("empresa_id", id_seguro).execute().data
+        or []
+    )
 except:
     t_gastos = []
 
 try:
-    t_abonos = supabase.table("abonos").select("*").execute().data or []
+    t_abonos = (
+        supabase.table("abonos").select("*").eq("empresa_id", id_seguro).execute().data
+        or []
+    )
 except:
     t_abonos = []
 
 try:
-    t_ventas = supabase.table("ventas").select("*").execute().data or []
+    t_ventas = (
+        supabase.table("ventas").select("*").eq("empresa_id", id_seguro).execute().data
+        or []
+    )
 except:
     t_ventas = []
 
 try:
-    t_entradas = supabase.table("entradas").select("*").execute().data or []
+    t_entradas = (
+        supabase.table("entradas")
+        .select("*")
+        .eq("empresa_id", id_seguro)
+        .execute()
+        .data
+        or []
+    )
 except:
     t_entradas = []
 
 try:
-    t_bonos = supabase.table("bonos_extras").select("*").execute().data or []
+    t_bonos = (
+        supabase.table("bonos_extras")
+        .select("*")
+        .eq("empresa_id", id_seguro)
+        .execute()
+        .data
+        or []
+    )
 except:
     t_bonos = []
 
 try:
-    t_inv = supabase.table("inventario").select("*").execute().data or []
+    t_inv = (
+        supabase.table("inventario")
+        .select("*")
+        .eq("empresa_id", id_seguro)
+        .execute()
+        .data
+        or []
+    )
 except:
     t_inv = []
 
+# SEMANAS GLOBALES (SIN FILTRO)
 try:
     res_sem = supabase.table("semanas").select("*").execute().data
     t_semanas = res_sem if res_sem else []
@@ -248,7 +286,6 @@ def extraer_numero_semana(nombre):
         return 0
 
 
-# --- LÓGICA DE CALENDARIO ---
 hoy = datetime.now().date()
 periodo_actual_sistema = "Periodo 1"
 semana_actual_sistema = "Semana 1"
@@ -911,6 +948,7 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                         .select("id")
                         .eq("periodo", b_per)
                         .eq("semana", b_sem)
+                        .eq("empresa_id", id_seguro)
                         .execute()
                         .data
                     )
@@ -920,7 +958,12 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                         ).eq("id", b_exist[0]["id"]).execute()
                     else:
                         supabase.table("bonos_extras").insert(
-                            {"periodo": b_per, "semana": b_sem, "bono_familia": b_monto}
+                            {
+                                "periodo": b_per,
+                                "semana": b_sem,
+                                "bono_familia": b_monto,
+                                "empresa_id": id_seguro,
+                            }
                         ).execute()
                     st.success("Bono guardado exitosamente.")
                     st.rerun()
@@ -1110,6 +1153,7 @@ elif menu_seleccionado == "💰 Control de Abonos":
                             "cliente": cli_abono,
                             "monto": monto_abono,
                             "medio_pago": medio_abono,
+                            "empresa_id": id_seguro,
                         }
                     ).execute()
                     st.session_state.limpiador += 1
@@ -1175,6 +1219,7 @@ elif menu_seleccionado == "📦 Kardex / Inventario":
                         "cantidad": cant_mov,
                         "asesor": asesor_mov,
                         "observacion": f"{tipo_mov}: {asesor_mov} (-{cant_mov * 80} PV)",
+                        "empresa_id": id_seguro,
                     }
                 ).execute()
                 st.success("Movimiento registrado con éxito.")
@@ -1537,6 +1582,7 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
                             "precio_costo_total": i["Total"]
                             + (flete_por_producto * i["Cantidad"]),
                             "puntos_pv": i["PV Unitario"] * i["Cantidad"],
+                            "empresa_id": id_seguro,  # NUEVO - PARA ENLAZAR CON EL CLIENTE
                         }
                         for i in st.session_state.carrito_entradas
                     ]
@@ -1810,6 +1856,7 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                         "total": total_factura,
                         "saldo_pendiente": deuda_actualizada,
                     }
+
                     supabase.table("ventas").insert(
                         [
                             {
@@ -1823,6 +1870,7 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                                 "medio_pago": medio_pago,
                                 "id_factura_venta": n_factura,
                                 "puntos_pv": i["PV Linea"],
+                                "empresa_id": id_seguro,  # NUEVO - PARA ENLAZAR CON EL CLIENTE
                             }
                             for i in st.session_state.carrito_ventas
                         ]
@@ -1879,7 +1927,7 @@ elif menu_seleccionado == "⚙️ Gestión de Productos":
                 key=f"p_pre_{lk}",
             )
         st.markdown('<br><div class="btn-principal">', unsafe_allow_html=True)
-        if st.button("💾 Guardar Producto en la Nube"):
+        if st.button("💾 Guardar Producto (Para Todos)"):
             if nom_p:
                 supabase.table("productos").insert(
                     {
@@ -1986,6 +2034,7 @@ elif menu_seleccionado == "👥 Base de Datos Clientes":
                         "nombre": nombre_formateado,
                         "celular": c_celular,
                         "direccion": c_direccion,
+                        "empresa_id": id_seguro,  # NUEVO - PARA ENLAZAR CON EL CLIENTE
                     }
                 ).execute()
                 st.session_state.limpiador += 1
@@ -2055,7 +2104,11 @@ elif menu_seleccionado == "👩‍💼 Gestión de Asesores":
                 try:
                     nombre_asesor_formateado = a_nombre.strip().upper()
                     supabase.table("asesores").insert(
-                        {"nombre": nombre_asesor_formateado, "telefono": a_tel}
+                        {
+                            "nombre": nombre_asesor_formateado,
+                            "telefono": a_tel,
+                            "empresa_id": id_seguro,  # NUEVO - PARA ENLAZAR CON EL CLIENTE
+                        }
                     ).execute()
                     st.session_state.limpiador += 1
                     st.session_state.msg_ase = (
@@ -2107,6 +2160,7 @@ elif menu_seleccionado == "💸 Registro de Gastos":
                             "fecha": str(g_fecha),
                             "concepto": g_concepto,
                             "monto": g_monto,
+                            "empresa_id": id_seguro,  # NUEVO - PARA ENLAZAR CON EL CLIENTE
                         }
                     ).execute()
                     st.session_state.limpiador += 1
