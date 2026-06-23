@@ -37,6 +37,8 @@ if "usuario_actual" not in st.session_state:
     st.session_state["usuario_actual"] = ""
 if "plan_actual" not in st.session_state:
     st.session_state["plan_actual"] = ""
+if "dias_restantes" not in st.session_state:
+    st.session_state["dias_restantes"] = 0
 
 
 def mostrar_login():
@@ -75,9 +77,17 @@ def mostrar_login():
 
                         # Validar si el plan no ha vencido
                         if fecha_hoy <= fecha_vencimiento:
+                            # 1. Calcular la diferencia de días exacta
+                            dias_calculados = (fecha_vencimiento - fecha_hoy).days
+
+                            # 2. Guardar todo en la memoria de Streamlit
                             st.session_state["logeado"] = True
                             st.session_state["usuario_actual"] = usuario_input
                             st.session_state["plan_actual"] = datos_cliente["plan"]
+                            st.session_state["dias_restantes"] = (
+                                dias_calculados  # 🟢 ¡Arreglado aquí!
+                            )
+
                             st.success("¡Acceso concedido! Preparando el Dashboard...")
                             st.rerun()
                         else:
@@ -108,6 +118,29 @@ if not st.session_state["logeado"]:
 # ==============================================================================
 st.sidebar.markdown(f"👤 **Bienvenido:** {st.session_state['usuario_actual']}")
 st.sidebar.markdown(f"⭐ **Plan Activo:** {st.session_state['plan_actual']}")
+
+# --- LÓGICA DEL CONTADOR DE DÍAS Y ALERTAS ---
+dias = st.session_state["dias_restantes"]
+
+if dias > 10:
+    # Semáforo Verde (Más de 10 días)
+    st.sidebar.success(f"⏳ **Tiempo restante:** {dias} días")
+elif dias > 0:
+    # Semáforo Amarillo (Entre 1 y 10 días)
+    st.sidebar.warning(f"⚠️ **Tiempo restante:** {dias} días")
+
+    # Alerta flotante específica para 10, 5 y 1 día
+    if dias in [10, 5, 1]:
+        st.toast(
+            f"¡Atención! A tu suscripción le quedan {dias} días. Contáctanos para renovar.",
+            icon="🚨",
+        )
+else:
+    # Semáforo Rojo (Vence hoy - 0 días)
+    st.sidebar.error("⏳ **Tiempo restante:** ¡Vence HOY!")
+    st.toast("¡Atención! Tu plan vence el día de hoy.", icon="🚨")
+
+# Botón para cerrar sesión
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state["logeado"] = False
     st.rerun()
