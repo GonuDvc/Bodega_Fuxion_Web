@@ -8,21 +8,112 @@ import altair as alt
 import admin
 
 # ==============================================================================
-# 1. CONEXIÓN A LA NUBE Y CONFIGURACIÓN
+# 1. CONFIGURACIÓN DE PÁGINA (¡Siempre debe ser el primer comando!)
 # ==============================================================================
-load_dotenv()
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+st.set_page_config(page_title="Bodega Fuxion PRO MAX", layout="wide")
+
+# ==============================================================================
+# 2. CONEXIÓN A LA BASE DE DATOS (Híbrida: Nube + Local)
+# ==============================================================================
+try:
+    # Intenta leer desde la Nube (Streamlit Cloud Secrets)
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except:
+    # Si da error (porque estás en tu PC local), lee el archivo .env
+    load_dotenv()
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ==============================================================================
+# 3. SISTEMA DE SUSCRIPCIONES Y LOGIN
+# ==============================================================================
+# Inicializar memoria temporal
+if "logeado" not in st.session_state:
+    st.session_state["logeado"] = False
+if "usuario_actual" not in st.session_state:
+    st.session_state["usuario_actual"] = ""
+if "plan_actual" not in st.session_state:
+    st.session_state["plan_actual"] = ""
 
 
-@st.cache_resource
-def init_connection():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def mostrar_login():
+    st.markdown(
+        "<h1 style='text-align: center;'>🔒 Acceso Bodega Fuxion PRO MAX</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        with st.form("formulario_login"):
+            usuario_input = st.text_input("Usuario")
+            password_input = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button(
+                "Ingresar al Sistema", use_container_width=True
+            )
+
+            if submit:
+                try:
+                    # Consultar la tabla de clientes en Supabase
+                    respuesta = (
+                        supabase.table("clientes_suscripciones")
+                        .select("*")
+                        .eq("usuario", usuario_input)
+                        .eq("password", password_input)
+                        .execute()
+                    )
+
+                    if len(respuesta.data) > 0:
+                        datos_cliente = respuesta.data[0]
+                        fecha_vencimiento = datetime.strptime(
+                            datos_cliente["fecha_vencimiento"], "%Y-%m-%d"
+                        ).date()
+                        fecha_hoy = datetime.now().date()
+
+                        # Validar si el plan no ha vencido
+                        if fecha_hoy <= fecha_vencimiento:
+                            st.session_state["logeado"] = True
+                            st.session_state["usuario_actual"] = usuario_input
+                            st.session_state["plan_actual"] = datos_cliente["plan"]
+                            st.success("¡Acceso concedido! Preparando el Dashboard...")
+                            st.rerun()
+                        else:
+                            st.error(
+                                f"❌ Tu plan {datos_cliente['plan']} venció el {fecha_vencimiento.strftime('%d/%m/%Y')}."
+                            )
+                            st.warning(
+                                "📲 Contáctanos por WhatsApp al +57 300 000 0000 para renovar tu suscripción."
+                            )
+                    else:
+                        st.error("⚠️ Usuario o contraseña incorrectos.")
+                except Exception as e:
+                    st.error(
+                        f"Error de conexión: {e}. Verifica que la tabla 'clientes_suscripciones' exista en Supabase."
+                    )
 
 
-supabase = init_connection()
+# ==============================================================================
+# 4. EL GUARDIA DE SEGURIDAD (Peaje)
+# ==============================================================================
+# Si no está logeado, muestra el login y DETIENE la ejecución
+if not st.session_state["logeado"]:
+    mostrar_login()
+    st.stop()  # <-- Esto oculta todo tu dashboard si no han pagado
 
-st.set_page_config(page_title="Bodega Fuxion Pro", page_icon="📦", layout="wide")
+# ==============================================================================
+# 5. MENÚ DEL USUARIO (Si ya pasó el peaje)
+# ==============================================================================
+st.sidebar.markdown(f"👤 **Bienvenido:** {st.session_state['usuario_actual']}")
+st.sidebar.markdown(f"⭐ **Plan Activo:** {st.session_state['plan_actual']}")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state["logeado"] = False
+    st.rerun()
+
+st.sidebar.markdown("---")
+
 st.markdown(
     """
     <style>
@@ -286,7 +377,6 @@ def obtener_periodo_semana_de_fecha(fecha_str):
             f_date = fecha_str.date()
         else:
             f_date = pd.to_datetime(fecha_str).date()
-
         for s in t_semanas:
             ini_raw = str(s.get("fecha_inicio") or s.get("fecha_ini") or "").split("T")[
                 0
@@ -299,7 +389,6 @@ def obtener_periodo_semana_de_fecha(fecha_str):
                 fin = pd.to_datetime(fin_raw, dayfirst=False, errors="coerce")
                 if pd.isna(fin):
                     fin = pd.to_datetime(fin_raw, dayfirst=True, errors="coerce")
-
                 if not pd.isna(ini) and not pd.isna(fin):
                     if ini.date() <= f_date <= fin.date():
                         return str(s.get("periodo", "N/A")).strip(), str(
@@ -333,15 +422,11 @@ def obtener_pv_unificado_semanas():
 # ==============================================================================
 def render_dashboard():
     st.title("📊 Panel de Control Gerencial (Inteligencia de Negocios)")
-
     v_df = pd.DataFrame(t_ventas)
-
-    # --- CONSTRUCCIÓN DE FILTROS DESDE EL CALENDARIO MAESTRO (SUPABASE) ---
     df_calendario = pd.DataFrame(t_semanas)
     anios_set, periodos_set, semanas_set = set(), set(), set()
 
     if not df_calendario.empty:
-        # Extraer Años de la fecha de inicio
         col_fecha = (
             "fecha_inicio"
             if "fecha_inicio" in df_calendario.columns
@@ -352,14 +437,10 @@ def render_dashboard():
                 df_calendario[col_fecha], errors="coerce"
             ).dropna()
             anios_set = set(fechas_validas.dt.year.astype(int).astype(str))
-
-        # Extraer Periodos
         if "periodo" in df_calendario.columns:
             periodos_set = set(
                 df_calendario["periodo"].dropna().astype(str).str.strip()
             )
-
-        # Extraer Semanas
         col_sem = (
             "nombre_semana"
             if "nombre_semana" in df_calendario.columns
@@ -368,14 +449,12 @@ def render_dashboard():
         if col_sem:
             semanas_set = set(df_calendario[col_sem].dropna().astype(str).str.strip())
 
-    # Listas finales para los desplegables con "TODOS"
     anios = ["TODOS"] + sorted(list(anios_set))
     periodos = ["TODOS"] + sorted(list(periodos_set))
     semanas = ["TODOS"] + sorted(list(semanas_set), key=extraer_numero_semana)
 
     st.markdown("### 🔍 Filtros de Análisis (Slicers)")
     col_f1, col_f2, col_f3 = st.columns(3)
-
     with col_f1:
         sel_anio = st.selectbox("📅 Seleccionar Año", anios)
     with col_f2:
@@ -387,7 +466,6 @@ def render_dashboard():
         st.info("No hay ventas registradas para mostrar en el Dashboard.")
         return
 
-    # Preparar el dataframe de ventas para el cruce de filtros
     v_df["fecha"] = pd.to_datetime(v_df["fecha"], errors="coerce")
     v_df["Año"] = v_df["fecha"].dt.year.astype(str)
 
@@ -397,7 +475,6 @@ def render_dashboard():
 
     v_df[["Periodo", "Semana"]] = v_df["fecha"].apply(map_per_sem)
 
-    # Lógica de Filtro Maestro (Cascada)
     df_filtrado = v_df.copy()
     if sel_anio != "TODOS":
         df_filtrado = df_filtrado[df_filtrado["Año"] == sel_anio]
@@ -410,20 +487,17 @@ def render_dashboard():
         st.warning(f"⚠️ No hay ventas registradas bajo estos filtros.")
         return
 
-    # --- 1. KPIs ---
     st.markdown("### 📈 Indicadores Clave (KPIs)")
     col1, col2, col3, col4 = st.columns(4)
     total_ventas = df_filtrado["precio_venta"].sum()
     total_cajas = df_filtrado["cantidad"].sum()
     ticket_promedio = total_ventas / len(df_filtrado) if len(df_filtrado) > 0 else 0
 
-    # La cartera de créditos es global (Deudas históricas vivas)
     cartera_data = []
     for c in t_cli:
         saldo = calcular_saldo_cliente(c["nombre"])
         if saldo > 0:
             cartera_data.append({"Cliente": c["nombre"], "Deuda": saldo})
-
     df_cartera = pd.DataFrame(cartera_data)
     total_cartera = df_cartera["Deuda"].sum() if not df_cartera.empty else 0
 
@@ -433,8 +507,6 @@ def render_dashboard():
     col4.metric("🚨 Cartera Activa (Global)", f"${total_cartera:,.0f}")
 
     st.markdown("---")
-
-    # --- 2. GRÁFICOS SUPERIORES ---
     c1, c2 = st.columns(2)
 
     with c1:
@@ -445,7 +517,6 @@ def render_dashboard():
             .reset_index()
             .sort_values(by="precio_venta", ascending=False)
         )
-
         if not df_asesores.empty:
             bar_vend = (
                 alt.Chart(df_asesores)
@@ -476,12 +547,10 @@ def render_dashboard():
     with c2:
         st.markdown("#### 💳 Composición por Medio de Pago (Ingresos)")
         df_pagos = df_filtrado.groupby("medio_pago")["precio_venta"].sum().reset_index()
-
         if not df_pagos.empty:
             df_pagos["Porcentaje"] = (
                 df_pagos["precio_venta"] / df_pagos["precio_venta"].sum()
             ) * 100
-
             pie_base = alt.Chart(df_pagos).encode(
                 theta=alt.Theta(field="precio_venta", type="quantitative"),
                 color=alt.Color(
@@ -504,8 +573,6 @@ def render_dashboard():
             st.info("Sin datos de medios de pago.")
 
     st.markdown("---")
-
-    # --- 3. GRÁFICOS INFERIORES ---
     c3, c4 = st.columns(2)
 
     with c3:
@@ -604,18 +671,14 @@ menu_seleccionado = st.sidebar.radio(
 # ==============================================================================
 # BLOQUE 7: RUTEADOR DE INTERFACES RESTANTES
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
 if menu_seleccionado == "📊 Dashboard General":
     render_dashboard()
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
     st.title("🏆 Calificación Plan PRO-LEV X (Ventana Móvil PV4)")
     st.write(
         "Auditoría de Volumen Personal y Arrastre exacto de **Compras Propias y Plataforma a FuXion** en base a las últimas 4 semanas."
     )
-
     if t_semanas:
         df_sem_full = pd.DataFrame(t_semanas)
         col_nom = (
@@ -623,49 +686,40 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
             if "nombre_semana" in df_sem_full.columns
             else ("semana" if "semana" in df_sem_full.columns else None)
         )
-
         if col_nom:
             df_sem_full["num_sem"] = df_sem_full[col_nom].apply(extraer_numero_semana)
             df_sem_full = df_sem_full.sort_values(by="num_sem").reset_index(drop=True)
             lista_semanas_ordenadas = [
                 str(x).strip() for x in df_sem_full[col_nom].tolist()
             ]
-
             idx_semana_sel = 0
             for i, val in enumerate(lista_semanas_ordenadas):
                 if val.upper() == semana_actual_sistema.upper():
                     idx_semana_sel = i
                     break
-
             semana_seleccionada = st.selectbox(
                 "Seleccione la Semana de Evaluación",
                 lista_semanas_ordenadas,
                 index=idx_semana_sel,
             )
             sem_num_actual = extraer_numero_semana(semana_seleccionada)
-
             pv_compras_num = obtener_pv_unificado_semanas()
-
             filas_historicas = []
             rango_matematico = range(sem_num_actual - 3, sem_num_actual + 1)
-
             acumulado = 0.0
             for w in rango_matematico:
                 if w <= 0:
                     continue
-
                 pv_semana = pv_compras_num.get(w, 0.0)
                 arrastre = acumulado
                 total_pv = arrastre + pv_semana
                 porcentaje = calcular_porcentaje_fuxion(total_pv)
-
                 p_match = df_sem_full[df_sem_full["num_sem"] == w]
                 per_nom = (
                     p_match["periodo"].iloc[0]
                     if not p_match.empty and "periodo" in p_match.columns
                     else "N/A"
                 )
-
                 filas_historicas.append(
                     {
                         "Periodo": per_nom,
@@ -679,7 +733,6 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
                 acumulado = total_pv
 
             df_mostrar = pd.DataFrame(filas_historicas)
-
             st.markdown(
                 f"### 📊 Ventana Móvil de Calificación hasta **{semana_seleccionada}**"
             )
@@ -693,30 +746,24 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
             if not df_mostrar.empty:
                 pv_actual = df_mostrar.iloc[-1]["Total PV"]
                 pct_actual = df_mostrar.iloc[-1]["%"]
-
                 if pv_actual < 60:
-                    faltante = 60 - pv_actual
-                    prox = "20%"
+                    faltante, prox = 60 - pv_actual, "20%"
                 elif pv_actual < 100:
-                    faltante = 100 - pv_actual
-                    prox = "25%"
+                    faltante, prox = 100 - pv_actual, "25%"
                 elif pv_actual < 300:
-                    faltante = 300 - pv_actual
-                    prox = "30%"
+                    faltante, prox = 300 - pv_actual, "30%"
                 elif pv_actual < 500:
-                    faltante = 500 - pv_actual
-                    prox = "40%"
+                    faltante, prox = 500 - pv_actual, "40%"
                 elif pv_actual < 800:
-                    faltante = 800 - pv_actual
-                    prox = "50%"
+                    faltante, prox = 800 - pv_actual, "50%"
                 else:
-                    faltante = 0
-                    prox = "MAX"
+                    faltante, prox = 0, "MAX"
 
-                if prox == "MAX":
-                    msj = "🌟 <b>¡Felicidades!</b> Has alcanzado el nivel MÁXIMO de descuento en Fuxion (50%)."
-                else:
-                    msj = f"🚀 Te hacen falta <b style='color: #cc0000; font-size: 18px;'>{faltante:,.0f} PV</b> para alcanzar el siguiente nivel del <b style='color: #cc0000; font-size: 18px;'>{prox}</b> de descuento."
+                msj = (
+                    "🌟 <b>¡Felicidades!</b> Has alcanzado el nivel MÁXIMO de descuento en Fuxion (50%)."
+                    if prox == "MAX"
+                    else f"🚀 Te hacen falta <b style='color: #cc0000; font-size: 18px;'>{faltante:,.0f} PV</b> para alcanzar el siguiente nivel del <b style='color: #cc0000; font-size: 18px;'>{prox}</b> de descuento."
+                )
 
                 st.markdown(
                     f"""
@@ -736,7 +783,6 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
             st.markdown("### 📝 Desglose Exacto de Puntos en esta Ventana")
             semanas_evaluadas = list(rango_matematico)
             desglose = []
-
             for ent in t_entradas:
                 w = extraer_numero_semana(ent.get("semana", ""))
                 if w in semanas_evaluadas:
@@ -750,7 +796,6 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
                             "PV Aportado": float(ent.get("puntos_pv") or 0.0),
                         }
                     )
-
             for v in t_ventas:
                 if v.get("medio_pago") in [
                     "Plataforma Fuxion",
@@ -780,10 +825,8 @@ elif menu_seleccionado == "🏆 Calificación PRO-LEV X":
     else:
         st.info("Por favor carga el calendario oficial en la tabla de Supabase.")
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
     st.title("💰 Comisiones Fuxion (Motor Automático PRO-LEV X)")
-
     st.markdown(
         """
     <div style="background-color: #E0F7FA; padding: 15px; border-radius: 8px; border-left: 5px solid #00ADEF; margin-bottom: 20px;">
@@ -801,9 +844,7 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
         "➕ Añadir Bono Familia / Liderazgo a una Semana Específica", expanded=True
     ):
         col_b1, col_b2, col_b3, col_b4 = st.columns([2, 2, 2, 2])
-
-        lista_periodos = []
-        lista_semanas = []
+        lista_periodos, lista_semanas = [], []
         if t_semanas:
             df_sem = pd.DataFrame(t_semanas)
             if "periodo" in df_sem.columns:
@@ -815,7 +856,6 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
             )
             if col_nom:
                 lista_semanas = df_sem[col_nom].dropna().unique().tolist()
-
         with col_b1:
             b_per = st.selectbox(
                 "Período", lista_periodos if lista_periodos else ["Periodo 1"]
@@ -855,7 +895,6 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                     st.error(f"Error en BD: {e}")
 
     st.markdown("### 📊 Historial Automatizado de Pagos Fuxion")
-
     reporte = []
     if t_semanas:
         pv_compras_num = obtener_pv_unificado_semanas()
@@ -864,19 +903,15 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
             w = extraer_numero_semana(b.get("semana", ""))
             if w > 0:
                 semanas_activas.add(w)
-
         lista_semanas_evaluar = sorted(list(semanas_activas))
-
         df_sem_full = pd.DataFrame(t_semanas)
         col_nom = (
             "nombre_semana"
             if "nombre_semana" in df_sem_full.columns
             else ("semana" if "semana" in df_sem_full.columns else None)
         )
-
         if col_nom:
             df_sem_full["num_sem"] = df_sem_full[col_nom].apply(extraer_numero_semana)
-
             for sem_num in lista_semanas_evaluar:
                 pv_semana = pv_compras_num.get(sem_num, 0.0)
                 pv4 = sum(
@@ -884,14 +919,12 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                 )
                 escala_str = calcular_porcentaje_fuxion(pv4)
                 porcentaje_dcto = float(escala_str.replace("%", "")) / 100.0
-
                 precio_semana = 0.0
                 for ent in t_entradas:
                     if extraer_numero_semana(ent.get("semana", "")) == sem_num:
-                        prod = ent.get("producto")
-                        cant = float(ent.get("cantidad") or 0.0)
-                        precio_semana += buscar_x_pub(prod) * cant
-
+                        precio_semana += buscar_x_pub(ent.get("producto")) * float(
+                            ent.get("cantidad") or 0.0
+                        )
                 for v in t_ventas:
                     if v.get("medio_pago") in [
                         "Plataforma Fuxion",
@@ -899,32 +932,27 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                     ]:
                         _, v_sem = obtener_periodo_semana_de_fecha(v.get("fecha"))
                         if extraer_numero_semana(v_sem) == sem_num:
-                            prod = v.get("producto")
-                            cant = float(v.get("cantidad") or 0.0)
-                            precio_semana += buscar_x_pub(prod) * cant
+                            precio_semana += buscar_x_pub(v.get("producto")) * float(
+                                v.get("cantidad") or 0.0
+                            )
 
                 base_sin_iva = precio_semana / 1.19
                 bono_vd = base_sin_iva * porcentaje_dcto
-
                 bono_fam = sum(
                     float(b.get("bono_familia") or 0.0)
                     for b in t_bonos
                     if extraer_numero_semana(b.get("semana", "")) == sem_num
                 )
-
                 comision_bruta = bono_vd + bono_fam
                 retefuente = comision_bruta * 0.10 if comision_bruta > 0 else 0
                 reteica = comision_bruta * 0.0069 if comision_bruta > 0 else 0
                 bancaria = 1563 if comision_bruta > 0 else 0
-                neto = comision_bruta - retefuente - reteica - bancaria
-                if neto < 0:
-                    neto = 0
+                neto = max(0, comision_bruta - retefuente - reteica - bancaria)
 
                 per_nom = "N/A"
                 p_match = df_sem_full[df_sem_full["num_sem"] == sem_num]
                 if not p_match.empty and "periodo" in p_match.columns:
                     per_nom = p_match["periodo"].iloc[0]
-
                 if bono_vd > 0 or bono_fam > 0 or pv_semana > 0:
                     reporte.append(
                         {
@@ -940,7 +968,6 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
                             "Neto a Cuenta": neto,
                         }
                     )
-
         reporte.reverse()
 
     if reporte:
@@ -962,16 +989,15 @@ elif menu_seleccionado == "💰 Comisiones Fuxion (Auto)":
             "No hay comisiones para mostrar. Registra compras para ganar PV y ventas en 'Plataforma Fuxion' para generar comisiones."
         )
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "💰 Control de Abonos":
     st.title("💰 Control de Cartera y Abonos de Clientes")
     if st.session_state.get("msg_abono"):
         st.success(st.session_state.msg_abono)
         st.session_state.msg_abono = None
-
     t_ab_lista, t_ab_crear = st.tabs(
         ["📋 Estado de Cuenta General", "➕ Registrar Abono / Pago"]
     )
+
     with t_ab_lista:
         if t_cli:
             cartera_data = []
@@ -1038,6 +1064,7 @@ elif menu_seleccionado == "💰 Control de Abonos":
                 ],
                 key=f"med_ab_{lk}",
             )
+
         st.markdown('<br><div class="btn-principal">', unsafe_allow_html=True)
         if st.button("💾 Procesar y Registrar Abono"):
             if not cli_abono or monto_abono <= 0:
@@ -1059,10 +1086,8 @@ elif menu_seleccionado == "💰 Control de Abonos":
                     st.error(f"Error al conectar con la base de datos: {e}")
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "📦 Kardex / Inventario":
     st.title("📦 Kardex Matemático en Tiempo Real")
-
     with st.expander(
         "🤝 Registrar Movimiento de Inventario / Préstamos y Entrega de Regalos",
         expanded=False,
@@ -1109,7 +1134,6 @@ elif menu_seleccionado == "📦 Kardex / Inventario":
                             f"🚨 **¡Puntos Insuficientes!** {asesor_mov} necesita `{costo_en_puntos} PV`."
                         )
                         st.stop()
-
                 supabase.table("inventario").insert(
                     {
                         "fecha": datetime.now().strftime("%Y-%m-%d"),
@@ -1203,7 +1227,6 @@ elif menu_seleccionado == "📦 Kardex / Inventario":
     except Exception as e:
         st.error(f"Error: {e}")
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "📝 Libro de Movimientos":
     st.title("📝 Auditoría de Movimientos")
     tab_ven, tab_ent, tab_inv_tab, tab_gas, tab_ab = st.tabs(
@@ -1215,7 +1238,6 @@ elif menu_seleccionado == "📝 Libro de Movimientos":
             "💰 Abonos Recibidos",
         ]
     )
-
     with tab_inv_tab:
         if t_inv:
             df_i = pd.DataFrame(t_inv)
@@ -1256,19 +1278,20 @@ elif menu_seleccionado == "📝 Libro de Movimientos":
                 "tipo_destinatario",
             ]
             df_v = df_v[[c for c in cols_to_show if c in df_v.columns]]
-            rename_map = {
-                "fecha": "Fecha",
-                "cliente": "Cliente",
-                "asesor": "Asesor",
-                "producto": "Producto",
-                "cantidad": "Cant.",
-                "precio_venta": "Cobro ($)",
-                "medio_pago": "Medio Pago",
-                "id_factura_venta": "N° Factura",
-                "puntos_pv": "PV Ganados",
-                "tipo_destinatario": "Destinatario",
-            }
-            df_v = df_v.rename(columns=rename_map)
+            df_v = df_v.rename(
+                columns={
+                    "fecha": "Fecha",
+                    "cliente": "Cliente",
+                    "asesor": "Asesor",
+                    "producto": "Producto",
+                    "cantidad": "Cant.",
+                    "precio_venta": "Cobro ($)",
+                    "medio_pago": "Medio Pago",
+                    "id_factura_venta": "N° Factura",
+                    "puntos_pv": "PV Ganados",
+                    "tipo_destinatario": "Destinatario",
+                }
+            )
             st.dataframe(df_v, use_container_width=True)
         else:
             st.info("No hay facturas de venta registradas.")
@@ -1332,7 +1355,6 @@ elif menu_seleccionado == "📝 Libro de Movimientos":
         else:
             st.info("No se han registrado abonos en el sistema aún.")
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "📥 Entradas (Compras)":
     st.title("📥 Registro de Pedidos a Fábrica")
     if st.session_state.get("msg_entrada"):
@@ -1342,7 +1364,6 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
     col_in1, col_in2 = st.columns(2)
     with col_in1:
         f_pedido = st.date_input("Fecha de Compra", datetime.today(), key=f"f_ped_{lk}")
-
         sem_list = []
         if t_semanas:
             col_nom = (
@@ -1354,17 +1375,14 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
                 sem_list = [str(s.get(col_nom, "")).strip() for s in t_semanas]
         if not sem_list:
             sem_list = ["Semana 1", "Semana 2", "Semana 3", "Semana 4"]
-
         idx_sem = 0
         for i, val in enumerate(sem_list):
             if val.upper() == semana_actual_sistema.upper():
                 idx_sem = i
                 break
-
         sem = st.selectbox(
             "Semana Fuxion (Autodetectada)", sem_list, index=idx_sem, key=f"sem_{lk}"
         )
-
     with col_in2:
         num_ped = st.text_input("N° de Orden / Pedido Fuxion", key=f"n_ped_{lk}")
         modalidad = st.selectbox("Modalidad", ["Normal", "Autoenvío"], key=f"mod_{lk}")
@@ -1394,7 +1412,6 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
     total_linea = precio_u * cant_ped
     prod_data = next((p for p in t_prod if p["nombre"] == prod_ped), {})
     pv_unit = 0 if es_regalo else int(prod_data.get("puntos_pv", 0))
-
     st.metric(f"Total línea (Precio Pub: ${precio_u:,.0f})", f"${total_linea:,.0f}")
 
     if st.button("➕ Añadir a Lista"):
@@ -1452,7 +1469,6 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
                     st.session_state.carrito_entradas.pop(i)
                     st.rerun()
         st.markdown("---")
-
         subtotal_inversion = sum(
             item["Total"] for item in st.session_state.carrito_entradas
         )
@@ -1469,7 +1485,6 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
             f"**Subtotal:** ${subtotal_inversion:,.0f} | **Flete Total:** ${valor_flete:,.0f} | **PUNTOS A GANAR PRO-LEV X:** {total_pv_compra} PV"
         )
         st.subheader(f"💰 Inversión Total: ${gran_total:,.0f}")
-
         col_f1, col_f2 = st.columns([1, 4])
         with col_f1:
             if st.button("🗑️ Vaciar Lista", key=f"vac_e_{lk}"):
@@ -1502,16 +1517,13 @@ elif menu_seleccionado == "📥 Entradas (Compras)":
                     st.error(f"Error: {e}")
             st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "🛒 Salidas (Ventas)":
     st.title("🛒 Terminal de Ventas POS")
-
     n_factura = generar_siguiente_factura()
 
     if st.session_state.get("msg_ok"):
         st.success(st.session_state.msg_ok)
         st.balloons()
-
         if "ultima_factura" in st.session_state:
             uf = st.session_state.ultima_factura
             color_saldo = "#ff4d4d" if uf["saldo_pendiente"] > 0 else "#00cc00"
@@ -1544,9 +1556,7 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
 
             for item in uf["items"]:
                 st.markdown(
-                    f"""
-                    <tr><td>{item["Cantidad"]}</td><td>{item["Producto"]}<br><small style="color:#666;">Desc: {item["Plan"]} | {item["PV Linea"]} PV</small></td><td style="text-align: right;">${item["Total Cobrado"]:,.0f}</td></tr>
-                """,
+                    f"""<tr><td>{item["Cantidad"]}</td><td>{item["Producto"]}<br><small style="color:#666;">Desc: {item["Plan"]} | {item["PV Linea"]} PV</small></td><td style="text-align: right;">${item["Total Cobrado"]:,.0f}</td></tr>""",
                     unsafe_allow_html=True,
                 )
 
@@ -1657,9 +1667,7 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
             monto_descuento_porcentual = base_sin_iva * porcentaje_dcto
             precio_con_descuento_u = precio_publico_u - monto_descuento_porcentual
 
-        precio_final_u = precio_con_descuento_u - dcto_especial
-        if precio_final_u < 0:
-            precio_final_u = 0.0
+        precio_final_u = max(0.0, precio_con_descuento_u - dcto_especial)
         precio_calculado_total = precio_final_u * cantidad
         total_pv_linea = pv_caja_base * cantidad
         st.metric(
@@ -1727,12 +1735,10 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                     st.session_state.carrito_ventas.pop(i)
                     st.rerun()
         st.markdown("---")
-
         total_factura = sum(
             item["Total Cobrado"] for item in st.session_state.carrito_ventas
         )
         st.info(f"**Monto Total a Cobrar:** ${total_factura:,.2f}")
-
         col_f1, col_f2 = st.columns([1, 4])
         with col_f1:
             if st.button("🗑️ Vaciar Lista", key=f"vac_v_{lk}"):
@@ -1751,9 +1757,11 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                         item["PV Linea"] for item in st.session_state.carrito_ventas
                     )
                     deuda_historica = calcular_saldo_cliente(cliente)
-                    deuda_actualizada = deuda_historica
-                    if medio_pago in ["Crédito", "Otros", "Addi", "Sistecrédito"]:
-                        deuda_actualizada += total_factura
+                    deuda_actualizada = (
+                        deuda_historica + total_factura
+                        if medio_pago in ["Crédito", "Otros", "Addi", "Sistecrédito"]
+                        else deuda_historica
+                    )
 
                     st.session_state.ultima_factura = {
                         "n_factura": n_factura,
@@ -1769,7 +1777,6 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                         "total": total_factura,
                         "saldo_pendiente": deuda_actualizada,
                     }
-
                     supabase.table("ventas").insert(
                         [
                             {
@@ -1797,7 +1804,6 @@ elif menu_seleccionado == "🛒 Salidas (Ventas)":
                     st.error(f"Error al registrar: {e}")
             st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "⚙️ Gestión de Productos":
     st.title("⚙️ Catálogo Maestro de Productos")
     if st.session_state.get("msg_admin"):
@@ -1806,6 +1812,7 @@ elif menu_seleccionado == "⚙️ Gestión de Productos":
     t_crear, t_editar, t_lista = st.tabs(
         ["➕ Crear Producto", "✏️ Editar Producto", "📋 Ver Catálogo Completo"]
     )
+
     with t_crear:
         col1, col2 = st.columns(2)
         with col1:
@@ -1858,6 +1865,7 @@ elif menu_seleccionado == "⚙️ Gestión de Productos":
             else:
                 st.error("El nombre del producto es obligatorio.")
         st.markdown("</div>", unsafe_allow_html=True)
+
     with t_editar:
         if t_prod:
             p_edit = st.selectbox(
@@ -1894,6 +1902,7 @@ elif menu_seleccionado == "⚙️ Gestión de Productos":
                 ).eq("nombre", p_edit).execute()
                 st.session_state.msg_admin = f"¡{p_edit} actualizado!"
                 st.rerun()
+
     with t_lista:
         if t_prod:
             df_prod = pd.DataFrame(t_prod)[
@@ -1908,7 +1917,6 @@ elif menu_seleccionado == "⚙️ Gestión de Productos":
             ]
             st.dataframe(df_prod, use_container_width=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "👥 Base de Datos Clientes":
     st.title("👥 Directorio de Clientes")
     if st.session_state.get("msg_cliente"):
@@ -1917,6 +1925,7 @@ elif menu_seleccionado == "👥 Base de Datos Clientes":
     t_cli_lista, t_cli_crear = st.tabs(
         ["📋 Lista de Clientes", "➕ Registrar Nuevo Cliente"]
     )
+
     with t_cli_lista:
         if t_cli:
             df_cli = pd.DataFrame(t_cli)[["nombre", "celular", "direccion"]]
@@ -1925,6 +1934,7 @@ elif menu_seleccionado == "👥 Base de Datos Clientes":
             st.dataframe(df_cli, use_container_width=True)
         else:
             st.info("Aún no tienes clientes registrados.")
+
     with t_cli_crear:
         col_c1, col_c2 = st.columns(2)
         with col_c1:
@@ -1954,7 +1964,6 @@ elif menu_seleccionado == "👥 Base de Datos Clientes":
                 st.error("El nombre es obligatorio.")
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "👩‍💼 Gestión de Asesores":
     st.title("👩‍💼 Directorio de Asesores / Vendedoras")
     if st.session_state.get("msg_ase"):
@@ -1963,6 +1972,7 @@ elif menu_seleccionado == "👩‍💼 Gestión de Asesores":
     t_ase_lista, t_ase_crear = st.tabs(
         ["📋 Lista de Asesores y Puntos", "➕ Registrar Nuevo Asesor"]
     )
+
     with t_ase_lista:
         if t_ase:
             asesores_data = []
@@ -1999,6 +2009,7 @@ elif menu_seleccionado == "👩‍💼 Gestión de Asesores":
             )
         else:
             st.info("Aún no tienes Asesores / Vendedoras registradas.")
+
     with t_ase_crear:
         col_a1, col_a2 = st.columns(2)
         with col_a1:
@@ -2024,7 +2035,6 @@ elif menu_seleccionado == "👩‍💼 Gestión de Asesores":
                 st.error("El nombre es obligatorio.")
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
 elif menu_seleccionado == "💸 Registro de Gastos":
     st.title("💸 Registro de Gastos Operativos")
     if st.session_state.get("msg_gasto"):
@@ -2033,6 +2043,7 @@ elif menu_seleccionado == "💸 Registro de Gastos":
     t_gasto_lista, t_gasto_crear = st.tabs(
         ["📋 Historial de Gastos", "➕ Registrar Nuevo Gasto"]
     )
+
     with t_gasto_lista:
         if t_gastos:
             df_g = pd.DataFrame(t_gastos)
@@ -2045,6 +2056,7 @@ elif menu_seleccionado == "💸 Registro de Gastos":
             st.dataframe(df_g, use_container_width=True)
         else:
             st.info("No hay gastos registrados.")
+
     with t_gasto_crear:
         g_fecha = st.date_input("Fecha del Gasto", datetime.today(), key=f"g_fech_{lk}")
         g_concepto = st.text_input(
